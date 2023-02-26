@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::prelude::*;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
@@ -55,13 +56,35 @@ impl Response {
     }
 }
 
-fn handle_http_request(stream: TcpStream) -> std::io::Result<()> {
+fn proxy_request(url: String) -> Result<String, Box<dyn std::error::Error>> {
+    let res = reqwest::blocking::get(url)?.text()?;
+    Ok(res)
+}
+
+fn parse_http_headline(headline: &String) -> (&str, &str, &str) {
+    let mut iter = headline.splitn(3, ' ');
+
+    let method = iter.next().unwrap();
+    let path = iter.next().unwrap();
+    let version = iter.next().unwrap().trim();
+
+    (method, path, version)
+}
+
+fn handle_http_request(stream: TcpStream, socks_req: Request) -> std::io::Result<()> {
     let mut http_req = String::new();
     let mut http_reader = BufReader::new(&stream);
     http_reader.read_line(&mut http_req)?;
     println!("HTTP Req: {:?}", http_req);
 
-    let http_res = String::from("HTTP/1.1 200 OK\n\nHello from my socks server!\n");
+    let (_method, path, _version) = parse_http_headline(&http_req);
+    let proxy_res = match proxy_request(format!("http://{}:{}{}", socks_req.dst_addr.to_string(), socks_req.dst_port, path)) {
+        Ok(res) => res,
+        Err(e) => e.to_string(),
+    };
+    println!("Proxy res: {:?}", proxy_res);
+
+    let http_res = format!("HTTP/1.1 200 OK\n\n>>> Proxy response\n{}\nHello from my socks server!\n<<<\n", proxy_res);
     let mut http_writer = BufWriter::new(&stream);
     http_writer.write(http_res.as_bytes())?;
 
@@ -93,7 +116,7 @@ fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
     println!("res: {:?}", res);
     stream.write(&res_bytes)?;
 
-    handle_http_request(stream)?;
+    handle_http_request(stream, req)?;
 
     Ok(())
 }
