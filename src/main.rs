@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::prelude::*;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
@@ -10,15 +9,17 @@ struct Request {
     dst_port: u16,
     // dst_addr: u32,
     dst_addr: Ipv4Addr,
+    id: Vec<u8>,
 }
 
 impl Request {
-    fn new(version: u8, command: u8, dst_port: u16, dst_addr: u32) -> Self {
+    fn new(version: u8, command: u8, dst_port: u16, dst_addr: u32, id: Vec<u8>) -> Self {
         Self {
             version,
             command,
             dst_port,
             dst_addr: Ipv4Addr::from(dst_addr),
+            id,
         }
     }
 }
@@ -56,50 +57,26 @@ impl Response {
     }
 }
 
-fn proxy_request(url: String) -> Result<String, Box<dyn std::error::Error>> {
-    let res = reqwest::blocking::get(url)?.text()?;
-    Ok(res)
-}
-
-fn parse_http_headline(headline: &String) -> (&str, &str, &str) {
-    let mut iter = headline.splitn(3, ' ');
-
-    let method = iter.next().unwrap();
-    let path = iter.next().unwrap();
-    let version = iter.next().unwrap().trim();
-
-    (method, path, version)
-}
-
-fn handle_http_request(stream: TcpStream, socks_req: Request) -> std::io::Result<()> {
-    let mut http_req = String::new();
-    let mut http_reader = BufReader::new(&stream);
-    http_reader.read_line(&mut http_req)?;
-    println!("HTTP Req: {:?}", http_req);
-
-    let (_method, path, _version) = parse_http_headline(&http_req);
-    let proxy_res = match proxy_request(format!("http://{}:{}{}", socks_req.dst_addr.to_string(), socks_req.dst_port, path)) {
-        Ok(res) => res,
-        Err(e) => e.to_string(),
-    };
-    println!("Proxy res: {:?}", proxy_res);
-
-    let http_res = format!("HTTP/1.1 200 OK\n\n>>> Proxy response\n{}\nHello from my socks server!\n<<<\n", proxy_res);
-    let mut http_writer = BufWriter::new(&stream);
-    http_writer.write(http_res.as_bytes())?;
-
-    Ok(())
-}
-
 fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
     let mut buf = [0; 8];
     stream.read(&mut buf)?;
+
+    let mut id = Vec::new();
+    loop {
+        let mut b = [0; 1];
+        stream.read(&mut b)?;
+        if b[0] == b'\0' {
+            break;
+        }
+        id.extend_from_slice(&b);
+    }
 
     let req = Request::new(
         buf[0],
         buf[1],
         ((buf[2] as u16) << 8) + buf[3] as u16,
         ((buf[4] as u32) << 24) + ((buf[5] as u32) << 16) + ((buf[6] as u32) << 8) + buf[7] as u32,
+        id,
     );
     println!("received: {:02x?}", buf);
     println!("req: {:?}", req);
@@ -116,7 +93,15 @@ fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
     println!("res: {:?}", res);
     stream.write(&res_bytes)?;
 
-    handle_http_request(stream, req)?;
+    let mut client = TcpStream::connect(format!("{}:{}", req.dst_addr.to_string(), req.dst_port))?;
+
+    let mut buf = [0; 256];
+    stream.read(&mut buf)?;
+    client.write(&mut buf)?;
+
+    let mut buf = [0; 256];
+    client.read(&mut buf)?;
+    stream.write(&mut buf)?;
 
     Ok(())
 }
