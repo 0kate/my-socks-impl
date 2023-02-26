@@ -95,13 +95,17 @@ fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
 
     let mut client = TcpStream::connect(format!("{}:{}", req.dst_addr.to_string(), req.dst_port))?;
 
-    let mut buf = [0; 256];
-    stream.read(&mut buf)?;
-    client.write(&mut buf)?;
+    let mut buf = [0; 1024];
+    loop {
+        let n_read = stream.read(&mut buf)?;
+        if n_read < 1 {
+            break;
+        }
+        client.write(&mut buf)?;
 
-    let mut buf = [0; 256];
-    client.read(&mut buf)?;
-    stream.write(&mut buf)?;
+        client.read(&mut buf)?;
+        stream.write(&mut buf)?;
+    }
 
     Ok(())
 }
